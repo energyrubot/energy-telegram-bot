@@ -1,6 +1,8 @@
 import os
 import logging
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import aiohttp
@@ -8,17 +10,12 @@ import requests
 
 # ==================== НАСТРОЙКА ====================
 
-# Получаем токен из переменных окружения
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
 if not TOKEN:
-    print("❌ ОШИБКА: TELEGRAM_TOKEN не найден!")
-    print("Добавьте в Environment Variables Render:")
-    print("Key: TELEGRAM_TOKEN")
-    print("Value: ваш_токен_бота")
+    print("❌ TELEGRAM_TOKEN не найден!")
     exit(1)
 
-# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -27,8 +24,34 @@ logger = logging.getLogger(__name__)
 
 logger.info("=" * 50)
 logger.info("🚀 ENERGY BOT - RENDER.COM")
-logger.info(f"✅ Токен получен: {TOKEN[:10]}...")
+logger.info(f"✅ Токен: {TOKEN[:10]}...")
 logger.info("=" * 50)
+
+# ==================== ПРОСТОЙ HTTP СЕРВЕР ДЛЯ RENDER ====================
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Обработчик health check запросов для Render"""
+    def do_GET(self):
+        if self.path == '/health' or self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Отключаем стандартное логирование запросов
+        pass
+
+def run_http_server():
+    """Запуск простого HTTP сервера на порту 8080"""
+    port = int(os.getenv('PORT', 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logger.info(f"🌐 HTTP сервер запущен на порту {port}")
+    logger.info(f"🏥 Health check: http://0.0.0.0:{port}/health")
+    server.serve_forever()
 
 # ==================== URL ФАЙЛОВ ====================
 
@@ -58,13 +81,11 @@ def get_yandex_direct_link(yandex_url: str) -> str:
 async def download_file(url: str) -> bytes:
     """Асинхронное скачивание файла"""
     try:
-        # Если Яндекс.Диск - получаем прямую ссылку
         if "disk.yandex.ru" in url or "yadi.sk" in url:
             url = get_yandex_direct_link(url)
         
         headers = {'User-Agent': 'Mozilla/5.0'}
         
-        # Используем aiohttp для асинхронного скачивания
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=60) as response:
                 if response.status == 200:
@@ -152,6 +173,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Хостинг: Render.com\n"
         f"• Состояние: ✅ Активен\n"
         f"• Время: {datetime.datetime.now().strftime('%H:%M:%S')}\n"
+        f"• Порт: 8080 (health check)\n"
         f"• Версия: Render Edition\n"
         f"• Файлы: Доступны"
     )
@@ -163,13 +185,11 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ЗАПУСК БОТА ====================
 
-def main():
-    """Запуск бота"""
+def run_telegram_bot():
+    """Запуск Telegram бота"""
     try:
-        # Создаем приложение
         app = Application.builder().token(TOKEN).build()
         
-        # Регистрируем команды
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_cmd))
         app.add_handler(CommandHandler("price", price))
@@ -178,21 +198,29 @@ def main():
         app.add_handler(CommandHandler("status", status))
         app.add_handler(CommandHandler("id", get_id))
         
-        logger.info("✅ Бот запущен на Render")
+        logger.info("✅ Telegram бот запущен")
         logger.info("⏳ Ожидаем команды...")
         
-        # Запускаем polling
-        app.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        app.run_polling(drop_pending_updates=True)
         
     except Exception as e:
-        logger.error(f"Ошибка запуска: {e}")
-        logger.info("Перезапуск через 10 секунд...")
+        logger.error(f"Ошибка бота: {e}")
         import time
         time.sleep(10)
-        main()
+        run_telegram_bot()
+
+def main():
+    """Основная функция"""
+    # Запускаем HTTP сервер в отдельном потоке
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+    
+    # Ждем запуска HTTP сервера
+    import time
+    time.sleep(2)
+    
+    # Запускаем Telegram бота
+    run_telegram_bot()
 
 if __name__ == "__main__":
     main()
